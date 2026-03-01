@@ -16,8 +16,15 @@ def order_ids(corners, ids):
 def detect_sheet(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     dic = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-    det = cv2.aruco.ArucoDetector(dic, cv2.aruco.DetectorParameters())
-    corners, ids, _ = det.detectMarkers(gray)
+    if hasattr(cv2.aruco, "ArucoDetector"):
+        det = cv2.aruco.ArucoDetector(dic, cv2.aruco.DetectorParameters())
+        corners, ids, _ = det.detectMarkers(gray)
+    else:
+        if hasattr(cv2.aruco, "DetectorParameters_create"):
+            params = cv2.aruco.DetectorParameters_create()
+        else:
+            params = cv2.aruco.DetectorParameters()
+        corners, ids, _ = cv2.aruco.detectMarkers(gray, dic, parameters=params)
     
     disp = frame.copy()
     if ids is not None:

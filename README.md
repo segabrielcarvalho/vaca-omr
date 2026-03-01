@@ -54,6 +54,39 @@ Processa dados de imagem enviados como bytes no corpo da requisição.
 - `threshold` (float, opcional): Limiar de detecção (padrão: 0.50)
 - `delta` (float, opcional): Margem de erro (padrão: 0.12)
 
+#### `GET /api/v2/health`
+Healthcheck da versão dinâmica do motor OMR.
+
+**Resposta:**
+- `status`
+- `service`
+- `engineVersion`
+
+#### `POST /api/v2/omr/process`
+Processa folha usando geometria dinâmica (`template-driven`).
+
+**Body JSON:**
+- `imageBase64` (string, obrigatório)
+- `compiledGeometryJson` (objeto JSON ou string JSON, obrigatório)
+- `threshold` (float, opcional): padrão `0.50`
+- `delta` (float, opcional): padrão `0.12`
+
+**Resposta de sucesso:**
+- `engineVersion`
+- `qr`
+- `registration`
+- `answers`
+- `answers_numeric`
+- `timings`
+- `images.rectifiedBase64`
+- `images.overlayBase64`
+
+**Resposta de erro:**
+- `success = false`
+- `error.code`
+- `error.message`
+- `timings`
+
 ### Códigos de Resposta
 
 - `200` - Sucesso no processamento
@@ -101,11 +134,13 @@ O sistema usa marcadores ArUco (IDs 0, 1, 2, 3) nos cantos da folha para:
 src/
 ├── main.py                 # Aplicação FastAPI principal
 ├── routes/
-│   └── routes_v1.py        # Endpoints da API v1
+│   ├── routes_v1.py        # Endpoints da API v1 (legado)
+│   └── routes_v2.py        # Endpoints da API v2 (dinâmico)
 ├── services/
 │   └── omr/
 │       ├── __init__.py
-│       └── omr_service.py  # Lógica principal do OMR
+│       ├── omr_service.py    # Lógica principal do OMR v1
+│       └── omr_service_v2.py # Lógica template-driven do OMR v2
 └── utils/
     ├── aruco_detector.py   # Detecção de marcadores ArUco
     ├── choice_detector.py  # Detecção de marcações
