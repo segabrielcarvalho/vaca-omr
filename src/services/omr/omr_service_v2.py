@@ -7,11 +7,15 @@ from typing import Any
 import cv2
 import numpy as np
 
-ENGINE_VERSION = os.environ.get("OMR_ENGINE_VERSION", "2.0.0-template-driven")
+from .debug_dump import write_omr_debug_dump
+
+ENGINE_VERSION = os.environ.get("OMR_ENGINE_VERSION", "2.1.0-template-driven-no-qr")
 REQUIRED_ARUCO_IDS = (0, 1, 2, 3)
 
 
 def process_image_dynamic(
+    capture_id: str | None,
+    session_id: str | None,
     image_base64: str,
     compiled_geometry_json: dict[str, Any] | str,
     threshold: float = 0.50,
@@ -19,92 +23,144 @@ def process_image_dynamic(
 ) -> dict[str, Any]:
     timings: dict[str, Any] = {}
     started = time.perf_counter()
+    image: np.ndarray | None = None
+    geometry: dict[str, Any] | None = None
+    page: dict[str, Any] | None = None
+    sheet: dict[str, Any] | None = None
+    registration: dict[str, Any] | None = None
+    answers: dict[str, Any] | None = None
+    registration_overlay: np.ndarray | None = None
+    answers_overlay: np.ndarray | None = None
+    overlay: np.ndarray | None = None
+    result: dict[str, Any] | None = None
+    unhandled_error: dict[str, Any] | None = None
 
     try:
+        try:
+            t = time.perf_counter()
+            image = _decode_base64_image(image_base64)
+            timings["decodeMs"] = _elapsed_ms(t)
+        except ValueError as exc:
+            timings["totalMs"] = _elapsed_ms(started)
+            result = _error_response("IMAGE_DECODE_FAILED", str(exc), timings)
+            return result
+
+        try:
+            geometry = _normalize_geometry(compiled_geometry_json)
+            page = _normalize_page(geometry)
+        except ValueError as exc:
+            timings["totalMs"] = _elapsed_ms(started)
+            result = _error_response("GEOMETRY_INVALID", str(exc), timings)
+            return result
+
         t = time.perf_counter()
-        image = _decode_base64_image(image_base64)
-        timings["decodeMs"] = _elapsed_ms(t)
-    except ValueError as exc:
-        timings["totalMs"] = _elapsed_ms(started)
-        return _error_response("IMAGE_DECODE_FAILED", str(exc), timings)
+        sheet = _detect_and_rectify_sheet(image, geometry, page)
+        timings["rectifyMs"] = _elapsed_ms(t)
 
-    try:
-        geometry = _normalize_geometry(compiled_geometry_json)
-        page = _normalize_page(geometry)
-    except ValueError as exc:
-        timings["totalMs"] = _elapsed_ms(started)
-        return _error_response("GEOMETRY_INVALID", str(exc), timings)
+        if not sheet["ok"]:
+            timings["totalMs"] = _elapsed_ms(started)
+            result = _error_response(
+                sheet["errorCode"],
+                sheet["errorMessage"],
+                timings,
+                extra={"arucoDetected": sheet.get("arucoDetected", [])},
+            )
+            return result
 
-    t = time.perf_counter()
-    sheet = _detect_and_rectify_sheet(image, geometry, page)
-    timings["rectifyMs"] = _elapsed_ms(t)
+        warped = sheet["warped"]
+        thresholded = sheet["thresholded"]
 
-    if not sheet["ok"]:
-        timings["totalMs"] = _elapsed_ms(started)
-        return _error_response(
-            sheet["errorCode"],
-            sheet["errorMessage"],
-            timings,
-            extra={"arucoDetected": sheet.get("arucoDetected", [])},
-        )
-
-    warped = sheet["warped"]
-    thresholded = sheet["thresholded"]
-
-    t = time.perf_counter()
-    qr_data = _read_qr(warped, geometry, page)
-    timings["qrMs"] = _elapsed_ms(t)
-
-    t = time.perf_counter()
-    try:
-        registration = _read_registration(thresholded, geometry, page, threshold, delta)
-    except ValueError as exc:
+        t = time.perf_counter()
+        try:
+            registration = _read_registration(thresholded, geometry, page, threshold, delta)
+        except ValueError as exc:
+            timings["registrationMs"] = _elapsed_ms(t)
+            timings["totalMs"] = _elapsed_ms(started)
+            result = _error_response("GEOMETRY_INVALID", str(exc), timings)
+            return result
         timings["registrationMs"] = _elapsed_ms(t)
-        timings["totalMs"] = _elapsed_ms(started)
-        return _error_response("GEOMETRY_INVALID", str(exc), timings)
-    timings["registrationMs"] = _elapsed_ms(t)
 
-    t = time.perf_counter()
-    try:
-        answers = _read_answers(thresholded, geometry, page, threshold, delta)
-    except ValueError as exc:
+        t = time.perf_counter()
+        try:
+            answers = _read_answers(thresholded, geometry, page, threshold, delta)
+        except ValueError as exc:
+            timings["answersMs"] = _elapsed_ms(t)
+            timings["totalMs"] = _elapsed_ms(started)
+            result = _error_response("GEOMETRY_INVALID", str(exc), timings)
+            return result
         timings["answersMs"] = _elapsed_ms(t)
+
+        t = time.perf_counter()
+        registration_overlay = _draw_overlay(
+            warped,
+            registration["details"],
+            [],
+        )
+        answers_overlay = _draw_overlay(
+            warped,
+            [],
+            answers["details"],
+        )
+        overlay = _draw_overlay(
+            warped,
+            registration["details"],
+            answers["details"],
+        )
+        rectified_base64 = _encode_image_base64(warped)
+        overlay_base64 = _encode_image_base64(overlay)
+        timings["overlayMs"] = _elapsed_ms(t)
+
         timings["totalMs"] = _elapsed_ms(started)
-        return _error_response("GEOMETRY_INVALID", str(exc), timings)
-    timings["answersMs"] = _elapsed_ms(t)
 
-    t = time.perf_counter()
-    overlay = _draw_overlay(
-        warped,
-        registration["details"],
-        answers["details"],
-        _qr_rect(geometry, page),
-    )
-    rectified_base64 = _encode_image_base64(warped)
-    overlay_base64 = _encode_image_base64(overlay)
-    timings["overlayMs"] = _elapsed_ms(t)
-
-    timings["totalMs"] = _elapsed_ms(started)
-
-    return {
-        "success": True,
-        "engineVersion": ENGINE_VERSION,
-        "qr": {
-            "data": qr_data.get("data"),
-            "points": qr_data.get("points"),
-        },
-        "registration": {
-            "value": registration["value"],
-            "status": registration["status"],
-        },
-        "answers": answers["answers"],
-        "answers_numeric": answers["answers_numeric"],
-        "timings": timings,
-        "images": {
-            "rectifiedBase64": rectified_base64,
-            "overlayBase64": overlay_base64,
-        },
-    }
+        result = {
+            "success": True,
+            "engineVersion": ENGINE_VERSION,
+            "registration": {
+                "value": registration["value"],
+                "status": registration["status"],
+            },
+            "answers": answers["answers"],
+            "answers_numeric": answers["answers_numeric"],
+            "timings": timings,
+            "images": {
+                "rectifiedBase64": rectified_base64,
+                "overlayBase64": overlay_base64,
+            },
+        }
+        return result
+    except Exception as exc:
+        unhandled_error = {
+            "code": "UNHANDLED_ERROR",
+            "message": str(exc),
+            "type": type(exc).__name__,
+        }
+        raise
+    finally:
+        _write_debug_dump_safe(
+            capture_id=capture_id,
+            session_id=session_id,
+            threshold=threshold,
+            delta=delta,
+            compiled_geometry_json=compiled_geometry_json,
+            geometry=geometry,
+            page=page,
+            sheet=sheet,
+            registration=registration,
+            answers=answers,
+            timings=timings,
+            result=result,
+            error=unhandled_error,
+            artifacts={
+                "00_input.jpg": image,
+                "01_gray.jpg": None if sheet is None else sheet.get("gray"),
+                "02_aruco_detected.jpg": None if sheet is None else sheet.get("arucoOverlay"),
+                "03_rectified.jpg": None if sheet is None else sheet.get("warped"),
+                "04_thresholded.jpg": None if sheet is None else sheet.get("thresholded"),
+                "05_registration_overlay.jpg": registration_overlay,
+                "06_answers_overlay.jpg": answers_overlay,
+                "07_overlay_final.jpg": overlay,
+            },
+        )
 
 
 def _elapsed_ms(start: float) -> float:
@@ -120,7 +176,6 @@ def _error_response(
     payload = {
         "success": False,
         "engineVersion": ENGINE_VERSION,
-        "qr": {"data": None, "points": None},
         "registration": {"value": None, "status": "invalid"},
         "answers": [],
         "answers_numeric": [],
@@ -130,6 +185,66 @@ def _error_response(
     if extra:
         payload.update(extra)
     return payload
+
+
+def _write_debug_dump_safe(
+    *,
+    capture_id: str | None,
+    session_id: str | None,
+    threshold: float,
+    delta: float,
+    compiled_geometry_json: dict[str, Any] | str,
+    geometry: dict[str, Any] | None,
+    page: dict[str, Any] | None,
+    sheet: dict[str, Any] | None,
+    registration: dict[str, Any] | None,
+    answers: dict[str, Any] | None,
+    timings: dict[str, Any],
+    result: dict[str, Any] | None,
+    error: dict[str, Any] | None,
+    artifacts: dict[str, np.ndarray | None],
+) -> None:
+    metadata = {
+        "engineVersion": ENGINE_VERSION,
+        "request": {
+            "threshold": threshold,
+            "delta": delta,
+            "compiledGeometrySummary": _summarize_geometry(
+                geometry if geometry is not None else compiled_geometry_json
+            ),
+        },
+        "page": page,
+        "arucoDetected": [] if sheet is None else sheet.get("arucoDetected", []),
+        "sourceMarkerCentersPx": None if sheet is None else sheet.get("sourceMarkerCentersPx"),
+        "targetAnchorCentersPx": None if sheet is None else sheet.get("targetAnchorCentersPx"),
+        "timings": timings,
+        "registration": _summarize_registration(registration),
+        "answers": _summarize_answers(answers),
+        "success": None if result is None else result.get("success"),
+        "error": error if error is not None else None if result is None else result.get("error"),
+        "response": _summarize_response(result),
+    }
+    try:
+        dump_paths = write_omr_debug_dump(
+            capture_id=capture_id,
+            session_id=session_id,
+            artifacts=artifacts,
+            metadata=metadata,
+        )
+        if dump_paths:
+            print(
+                "[vaca-omr] debug dump written:",
+                json.dumps(
+                    {
+                        "captureId": capture_id,
+                        "sessionId": session_id,
+                        "paths": dump_paths,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+    except Exception as exc:
+        print(f"[vaca-omr] failed to write debug dump: {exc}")
 
 
 def _decode_base64_image(image_base64: str) -> np.ndarray:
@@ -201,13 +316,24 @@ def _detect_and_rectify_sheet(
 ) -> dict[str, Any]:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     corners, ids = _detect_aruco_markers(gray)
+    aruco_overlay = image.copy()
+    if ids is not None and len(ids) > 0:
+        cv2.aruco.drawDetectedMarkers(aruco_overlay, corners, ids)
+
+    target_map = _target_anchor_centers(geometry, page)
 
     if ids is None or len(ids) == 0:
         return {
             "ok": False,
             "errorCode": "ARUCO_NOT_FOUND",
             "errorMessage": "Nenhuma ancora ArUco encontrada.",
+            "gray": gray,
+            "arucoOverlay": aruco_overlay,
             "arucoDetected": [],
+            "targetAnchorCentersPx": {
+                marker_id: [float(coords[0]), float(coords[1])]
+                for marker_id, coords in target_map.items()
+            },
         }
 
     detected_ids = [int(value) for value in ids.flatten().tolist()]
@@ -220,10 +346,19 @@ def _detect_and_rectify_sheet(
             "ok": False,
             "errorCode": "ARUCO_MISSING_IDS",
             "errorMessage": "Nem todas as ancoras ArUco obrigatorias (0..3) foram encontradas.",
+            "gray": gray,
+            "arucoOverlay": aruco_overlay,
             "arucoDetected": detected_ids,
+            "sourceMarkerCentersPx": {
+                marker_id: [float(point[0]), float(point[1])]
+                for marker_id, point in marker_map.items()
+            },
+            "targetAnchorCentersPx": {
+                marker_id: [float(coords[0]), float(coords[1])]
+                for marker_id, coords in target_map.items()
+            },
         }
 
-    target_map = _target_anchor_centers(geometry, page)
     source = np.array([marker_map[marker_id] for marker_id in REQUIRED_ARUCO_IDS], np.float32)
     target = np.array([target_map[marker_id] for marker_id in REQUIRED_ARUCO_IDS], np.float32)
 
@@ -239,9 +374,19 @@ def _detect_and_rectify_sheet(
 
     return {
         "ok": True,
+        "gray": gray,
+        "arucoOverlay": aruco_overlay,
         "warped": warped,
         "thresholded": thresholded,
         "arucoDetected": detected_ids,
+        "sourceMarkerCentersPx": {
+            marker_id: [float(point[0]), float(point[1])]
+            for marker_id, point in marker_map.items()
+        },
+        "targetAnchorCentersPx": {
+            marker_id: [float(coords[0]), float(coords[1])]
+            for marker_id, coords in target_map.items()
+        },
     }
 
 
@@ -293,60 +438,6 @@ def _detect_aruco_markers(gray: np.ndarray) -> tuple[Any, Any]:
 
     corners, ids, _ = cv2.aruco.detectMarkers(gray, dictionary, parameters=params)
     return corners, ids
-
-
-def _read_qr(
-    warped: np.ndarray,
-    geometry: dict[str, Any],
-    page: dict[str, Any],
-) -> dict[str, Any]:
-    detector = cv2.QRCodeDetector()
-
-    qr_x0, qr_y0, qr_x1, qr_y1 = _qr_rect(geometry, page)
-    roi = warped[qr_y0:qr_y1, qr_x0:qr_x1]
-
-    data = ""
-    points = None
-
-    if roi.size > 0:
-        data, points, _ = detector.detectAndDecode(roi)
-        if data and points is not None:
-            points[:, :, 0] += qr_x0
-            points[:, :, 1] += qr_y0
-
-    if not data:
-        data, points, _ = detector.detectAndDecode(warped)
-
-    return {
-        "data": data or None,
-        "points": points.tolist() if points is not None else None,
-    }
-
-
-def _qr_rect(geometry: dict[str, Any], page: dict[str, Any]) -> tuple[int, int, int, int]:
-    qr = geometry.get("qr", {})
-    if not isinstance(qr, dict):
-        qr = {}
-
-    x_mm = _num(qr.get("xMm"), 170.0)
-    y_mm = _num(qr.get("yMm"), 24.0)
-    size_mm = _num(qr.get("sizeMm"), 28.0)
-    margin_mm = _num(qr.get("marginMm"), 3.0)
-
-    x0 = _clamp(_mm_x_to_px(x_mm - margin_mm, page), 0, page["width_px"] - 1)
-    y0 = _clamp(_mm_y_to_px(y_mm - margin_mm, page), 0, page["height_px"] - 1)
-    x1 = _clamp(
-        _mm_x_to_px(x_mm + size_mm + margin_mm, page),
-        x0 + 1,
-        page["width_px"],
-    )
-    y1 = _clamp(
-        _mm_y_to_px(y_mm + size_mm + margin_mm, page),
-        y0 + 1,
-        page["height_px"],
-    )
-
-    return x0, y0, x1, y1
 
 
 def _read_registration(
@@ -522,15 +613,11 @@ def _draw_overlay(
     warped: np.ndarray,
     registration_details: list[dict[str, Any]],
     answers_details: list[dict[str, Any]],
-    qr_rect: tuple[int, int, int, int],
 ) -> np.ndarray:
     overlay = warped.copy()
 
     _draw_cells(overlay, registration_details)
     _draw_cells(overlay, answers_details)
-
-    x0, y0, x1, y1 = qr_rect
-    cv2.rectangle(overlay, (x0, y0), (x1, y1), (255, 200, 0), 2)
 
     return overlay
 
@@ -557,6 +644,75 @@ def _draw_cells(image: np.ndarray, details: list[dict[str, Any]]) -> None:
             if 0 <= second_index < len(bubbles):
                 cx, cy, radius = bubbles[second_index]
                 cv2.circle(image, (int(cx), int(cy)), int(radius), (0, 0, 255), 2)
+
+
+def _summarize_geometry(compiled_geometry_json: dict[str, Any] | str | None) -> dict[str, Any] | None:
+    if compiled_geometry_json is None:
+        return None
+
+    geometry = compiled_geometry_json
+    if isinstance(geometry, str):
+        try:
+            geometry = json.loads(geometry)
+        except json.JSONDecodeError:
+            return {"rawType": "string", "parseable": False}
+
+    if not isinstance(geometry, dict):
+        return {"rawType": type(compiled_geometry_json).__name__}
+
+    questions = geometry.get("questions")
+    registration = geometry.get("registration")
+    return {
+        "page": geometry.get("page"),
+        "anchors": geometry.get("anchors"),
+        "registration": registration,
+        "questions": {
+            "questionCount": None if not isinstance(questions, dict) else questions.get("questionCount"),
+            "columns": None if not isinstance(questions, dict) else questions.get("columns"),
+            "rowsPerColumn": None if not isinstance(questions, dict) else questions.get("rowsPerColumn"),
+            "alternatives": None if not isinstance(questions, dict) else questions.get("alternatives"),
+        },
+        "registrationColumns": None
+        if not isinstance(registration, dict)
+        else registration.get("columns"),
+    }
+
+
+def _summarize_registration(registration: dict[str, Any] | None) -> dict[str, Any] | None:
+    if registration is None:
+        return None
+    return {
+        "status": registration.get("status"),
+        "value": registration.get("value"),
+        "details": registration.get("details"),
+    }
+
+
+def _summarize_answers(answers: dict[str, Any] | None) -> dict[str, Any] | None:
+    if answers is None:
+        return None
+    return {
+        "answers": answers.get("answers"),
+        "answers_numeric": answers.get("answers_numeric"),
+        "details": answers.get("details"),
+    }
+
+
+def _summarize_response(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    if result is None:
+        return None
+
+    payload = {
+        key: value
+        for key, value in result.items()
+        if key != "images"
+    }
+    if "images" in result:
+        payload["images"] = {
+            "hasRectifiedBase64": bool(result["images"].get("rectifiedBase64")),
+            "hasOverlayBase64": bool(result["images"].get("overlayBase64")),
+        }
+    return payload
 
 
 def _encode_image_base64(image: np.ndarray) -> str | None:
@@ -614,10 +770,6 @@ def _mm_x_to_px(value_mm: float, page: dict[str, Any]) -> int:
 
 def _mm_y_to_px(value_mm: float, page: dict[str, Any]) -> int:
     return int(round(value_mm * page["y_scale"]))
-
-
-def _clamp(value: int, low: int, high: int) -> int:
-    return max(low, min(high, value))
 
 
 def _num(value: Any, default: float) -> float:

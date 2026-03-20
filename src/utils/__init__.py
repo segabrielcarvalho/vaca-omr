@@ -9,7 +9,6 @@ from .visualization import (
     draw_result, centers_preview, info_panel, 
     board, fit_h, wrap_lines
 )
-from .qr_detector import detect_qr
 from .file_handler import (
     save_img, save_metadata, create_log_data, save_all_images
 )
@@ -36,9 +35,6 @@ __all__ = [
     'fit_h',
     'wrap_lines',
 
-    # QR
-    'detect_qr',
-    
     # File handling
     'save_img',
     'save_metadata',

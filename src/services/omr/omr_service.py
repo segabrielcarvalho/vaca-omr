@@ -3,7 +3,7 @@ import datetime
 from pathlib import Path
 
 from ...utils import (
-    detect_sheet, base_centers, detect_choices, detect_qr
+    detect_sheet, base_centers, detect_choices
 )
 
 ABC = "ABCDE"
@@ -44,8 +44,6 @@ class OMRService:
         
         centers = base_centers()
         fills, picks = detect_choices(th, centers, self.threshold, self.delta)
-        qr_info = detect_qr(warped if warped is not None else img)
-        
         readable_answers = []
         for pick in picks:
             if pick == -1:
@@ -76,7 +74,6 @@ class OMRService:
                 "detection_status": status,
                 "aruco_count": len(ids) if ids is not None else 0,
                 "input_shape": list(img.shape),
-                "qr": qr_info,
                 "parameters": {
                     "threshold": self.threshold,
                     "delta": self.delta

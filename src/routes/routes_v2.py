@@ -11,6 +11,8 @@ router = APIRouter()
 
 
 class OmrProcessRequest(BaseModel):
+    captureId: str | None = None
+    sessionId: str | None = None
     imageBase64: str
     compiledGeometryJson: dict[str, Any] | str
     threshold: float = Field(default=0.50, ge=0.0, le=1.0)
@@ -30,6 +32,8 @@ async def health():
 async def omr_process(payload: OmrProcessRequest):
     try:
         result = process_image_dynamic(
+            capture_id=payload.captureId,
+            session_id=payload.sessionId,
             image_base64=payload.imageBase64,
             compiled_geometry_json=payload.compiledGeometryJson,
             threshold=payload.threshold,

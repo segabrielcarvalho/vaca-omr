@@ -156,6 +156,7 @@ logs/
 # Temporary files
 *.tmp
 *.temp
+.tmp/
 
 # Docker
 .dockerignore
