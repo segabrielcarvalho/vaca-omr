@@ -11,6 +11,7 @@ class OmrRoutesV2Test(unittest.IsolatedAsyncioTestCase):
             sessionId="session-1",
             imageBase64="Zm9v",
             compiledGeometryJson={"questions": {"questionCount": 1}},
+            masterAnswers=[2],
         )
 
         with patch("src.routes.routes_v2.process_image_dynamic", return_value={"success": True}) as process:
@@ -21,6 +22,7 @@ class OmrRoutesV2Test(unittest.IsolatedAsyncioTestCase):
             session_id="session-1",
             image_base64="Zm9v",
             compiled_geometry_json={"questions": {"questionCount": 1}},
+            master_answers=[2],
             threshold=0.5,
             delta=0.12,
         )
@@ -40,6 +42,7 @@ class OmrRoutesV2Test(unittest.IsolatedAsyncioTestCase):
             session_id=None,
             image_base64="Zm9v",
             compiled_geometry_json={"questions": {"questionCount": 1}},
+            master_answers=None,
             threshold=0.5,
             delta=0.12,
         )

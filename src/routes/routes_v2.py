@@ -15,6 +15,7 @@ class OmrProcessRequest(BaseModel):
     sessionId: str | None = None
     imageBase64: str
     compiledGeometryJson: dict[str, Any] | str
+    masterAnswers: list[int | None] | None = None
     threshold: float = Field(default=0.50, ge=0.0, le=1.0)
     delta: float = Field(default=0.12, ge=0.0, le=1.0)
 
@@ -36,6 +37,7 @@ async def omr_process(payload: OmrProcessRequest):
             session_id=payload.sessionId,
             image_base64=payload.imageBase64,
             compiled_geometry_json=payload.compiledGeometryJson,
+            master_answers=payload.masterAnswers,
             threshold=payload.threshold,
             delta=payload.delta,
         )

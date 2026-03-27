@@ -18,6 +18,7 @@ def process_image_dynamic(
     session_id: str | None,
     image_base64: str,
     compiled_geometry_json: dict[str, Any] | str,
+    master_answers: list[int | None] | None = None,
     threshold: float = 0.50,
     delta: float = 0.12,
 ) -> dict[str, Any]:
@@ -95,16 +96,19 @@ def process_image_dynamic(
             warped,
             registration["details"],
             [],
+            None,
         )
         answers_overlay = _draw_overlay(
             warped,
             [],
             answers["details"],
+            master_answers,
         )
         overlay = _draw_overlay(
             warped,
             registration["details"],
             answers["details"],
+            master_answers,
         )
         rectified_base64 = _encode_image_base64(warped)
         overlay_base64 = _encode_image_base64(overlay)
@@ -142,6 +146,7 @@ def process_image_dynamic(
             threshold=threshold,
             delta=delta,
             compiled_geometry_json=compiled_geometry_json,
+            master_answers=master_answers,
             geometry=geometry,
             page=page,
             sheet=sheet,
@@ -194,6 +199,7 @@ def _write_debug_dump_safe(
     threshold: float,
     delta: float,
     compiled_geometry_json: dict[str, Any] | str,
+    master_answers: list[int | None] | None,
     geometry: dict[str, Any] | None,
     page: dict[str, Any] | None,
     sheet: dict[str, Any] | None,
@@ -212,6 +218,7 @@ def _write_debug_dump_safe(
             "compiledGeometrySummary": _summarize_geometry(
                 geometry if geometry is not None else compiled_geometry_json
             ),
+            "masterAnswers": master_answers,
         },
         "page": page,
         "arucoDetected": [] if sheet is None else sheet.get("arucoDetected", []),
@@ -613,11 +620,12 @@ def _draw_overlay(
     warped: np.ndarray,
     registration_details: list[dict[str, Any]],
     answers_details: list[dict[str, Any]],
+    master_answers: list[int | None] | None = None,
 ) -> np.ndarray:
     overlay = warped.copy()
 
     _draw_cells(overlay, registration_details)
-    _draw_cells(overlay, answers_details)
+    _draw_answer_cells(overlay, answers_details, master_answers)
 
     return overlay
 
@@ -644,6 +652,77 @@ def _draw_cells(image: np.ndarray, details: list[dict[str, Any]]) -> None:
             if 0 <= second_index < len(bubbles):
                 cx, cy, radius = bubbles[second_index]
                 cv2.circle(image, (int(cx), int(cy)), int(radius), (0, 0, 255), 2)
+
+
+def _draw_answer_cells(
+    image: np.ndarray,
+    details: list[dict[str, Any]],
+    master_answers: list[int | None] | None,
+) -> None:
+    for index, row in enumerate(details):
+        bubbles = row.get("bubbles", [])
+        decision = int(row.get("decision", -1))
+        best_index = int(row.get("bestIndex", -1))
+        second_index = int(row.get("secondIndex", -1))
+        master_answer = _normalize_master_answer(
+            None if master_answers is None or index >= len(master_answers) else master_answers[index],
+            len(bubbles),
+        )
+
+        for (cx, cy, radius) in bubbles:
+            cv2.circle(image, (int(cx), int(cy)), int(radius), (160, 160, 160), 1)
+
+        if master_answer is None:
+            if decision >= 0 and decision < len(bubbles):
+                _draw_filled_choice(image, bubbles[decision], (0, 170, 0), (0, 200, 0))
+        else:
+            _draw_choice_ring(image, bubbles[master_answer - 1], (0, 200, 0), 2, 1)
+
+            if decision >= 0 and decision < len(bubbles):
+                selected_answer = decision + 1
+                if selected_answer == master_answer:
+                    _draw_filled_choice(image, bubbles[decision], (0, 170, 0), (0, 200, 0))
+                else:
+                    _draw_filled_choice(image, bubbles[decision], (0, 140, 255), (0, 165, 255))
+
+        if decision == -2:
+            if 0 <= best_index < len(bubbles):
+                _draw_choice_ring(image, bubbles[best_index], (0, 0, 255), 2, 0)
+            if 0 <= second_index < len(bubbles):
+                _draw_choice_ring(image, bubbles[second_index], (0, 0, 255), 2, 0)
+
+
+def _draw_filled_choice(
+    image: np.ndarray,
+    bubble: tuple[int, int, int],
+    fill_color: tuple[int, int, int],
+    stroke_color: tuple[int, int, int],
+) -> None:
+    cx, cy, radius = bubble
+    cv2.circle(image, (int(cx), int(cy)), int(max(2, radius - 2)), fill_color, -1)
+    cv2.circle(image, (int(cx), int(cy)), int(radius), stroke_color, 2)
+
+
+def _draw_choice_ring(
+    image: np.ndarray,
+    bubble: tuple[int, int, int],
+    color: tuple[int, int, int],
+    thickness: int,
+    radius_offset: int,
+) -> None:
+    cx, cy, radius = bubble
+    cv2.circle(image, (int(cx), int(cy)), int(radius + radius_offset), color, thickness)
+
+
+def _normalize_master_answer(
+    value: int | None,
+    bubbles_count: int,
+) -> int | None:
+    if not isinstance(value, int):
+        return None
+    if value < 1 or value > bubbles_count:
+        return None
+    return value
 
 
 def _summarize_geometry(compiled_geometry_json: dict[str, Any] | str | None) -> dict[str, Any] | None:
