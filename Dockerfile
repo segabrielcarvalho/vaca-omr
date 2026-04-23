@@ -41,13 +41,6 @@ RUN chmod +x /app/start.sh
 
 EXPOSE 11001
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 CMD \
-    python -c "import sys, urllib.request; \
-try: \
-    sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:11001/api/v1/health', timeout=2).status == 200 else 1) \
-except Exception: \
-    sys.exit(1)"
-
 CMD ["/bin/sh", "/app/start.sh"]
 
 FROM runtime AS staging
