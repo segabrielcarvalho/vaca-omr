@@ -31,6 +31,7 @@ def process_image_dynamic(
     master_answers: list[int | None] | None = None,
     threshold: float = 0.50,
     delta: float = 0.12,
+    include_images: bool = True,
 ) -> dict[str, Any]:
     timings: dict[str, Any] = {}
     started = time.perf_counter()
@@ -53,6 +54,7 @@ def process_image_dynamic(
             sessionId=session_id,
             threshold=threshold,
             delta=delta,
+            includeImages=include_images,
             imageBase64Chars=len(image_base64 or ""),
         )
         try:
@@ -182,28 +184,33 @@ def process_image_dynamic(
             answersCount=len(answers["answers"]),
         )
 
-        t = time.perf_counter()
-        registration_overlay = _draw_overlay(
-            warped,
-            registration["details"],
-            [],
-            None,
-        )
-        answers_overlay = _draw_overlay(
-            warped,
-            [],
-            answers["details"],
-            master_answers,
-        )
-        overlay = _draw_overlay(
-            warped,
-            registration["details"],
-            answers["details"],
-            master_answers,
-        )
-        rectified_base64 = _encode_image_base64(warped)
-        overlay_base64 = _encode_image_base64(overlay)
-        timings["overlayMs"] = _elapsed_ms(t)
+        if include_images:
+            t = time.perf_counter()
+            registration_overlay = _draw_overlay(
+                warped,
+                registration["details"],
+                [],
+                None,
+            )
+            answers_overlay = _draw_overlay(
+                warped,
+                [],
+                answers["details"],
+                master_answers,
+            )
+            overlay = _draw_overlay(
+                warped,
+                registration["details"],
+                answers["details"],
+                master_answers,
+            )
+            rectified_base64 = _encode_image_base64(warped)
+            overlay_base64 = _encode_image_base64(overlay)
+            timings["overlayMs"] = _elapsed_ms(t)
+        else:
+            timings["overlayMs"] = 0.0
+            rectified_base64 = None
+            overlay_base64 = None
 
         timings["totalMs"] = _elapsed_ms(started)
         _trace(
@@ -224,11 +231,12 @@ def process_image_dynamic(
             "answers": answers["answers"],
             "answers_numeric": answers["answers_numeric"],
             "timings": timings,
-            "images": {
+        }
+        if include_images:
+            result["images"] = {
                 "rectifiedBase64": rectified_base64,
                 "overlayBase64": overlay_base64,
-            },
-        }
+            }
         _trace(
             "omr.service.finished",
             captureId=capture_id,

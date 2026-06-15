@@ -14,7 +14,10 @@ class OmrRoutesV2Test(unittest.IsolatedAsyncioTestCase):
             masterAnswers=[2],
         )
 
-        with patch("src.routes.routes_v2.process_image_dynamic", return_value={"success": True}) as process:
+        with patch(
+            "src.routes.routes_v2.process_image_dynamic",
+            return_value={"success": True},
+        ) as process:
             response = await omr_process(payload)
 
         process.assert_called_once_with(
@@ -25,6 +28,7 @@ class OmrRoutesV2Test(unittest.IsolatedAsyncioTestCase):
             master_answers=[2],
             threshold=0.5,
             delta=0.12,
+            include_images=True,
         )
         self.assertEqual(response.status_code, 200)
 
@@ -45,6 +49,29 @@ class OmrRoutesV2Test(unittest.IsolatedAsyncioTestCase):
             master_answers=None,
             threshold=0.5,
             delta=0.12,
+            include_images=True,
+        )
+        self.assertEqual(response.status_code, 200)
+
+    async def test_process_accepts_fast_mode_without_images(self) -> None:
+        payload = OmrProcessRequest(
+            imageBase64="Zm9v",
+            compiledGeometryJson={"questions": {"questionCount": 1}},
+            includeImages=False,
+        )
+
+        with patch("src.routes.routes_v2.process_image_dynamic", return_value={"success": True}) as process:
+            response = await omr_process(payload)
+
+        process.assert_called_once_with(
+            capture_id=None,
+            session_id=None,
+            image_base64="Zm9v",
+            compiled_geometry_json={"questions": {"questionCount": 1}},
+            master_answers=None,
+            threshold=0.5,
+            delta=0.12,
+            include_images=False,
         )
         self.assertEqual(response.status_code, 200)
 

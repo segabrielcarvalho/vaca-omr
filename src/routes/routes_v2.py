@@ -22,6 +22,7 @@ class OmrProcessRequest(BaseModel):
     masterAnswers: list[int | None] | None = None
     threshold: float = Field(default=0.50, ge=0.0, le=1.0)
     delta: float = Field(default=0.12, ge=0.0, le=1.0)
+    includeImages: bool = True
 
 
 @router.get("/health")
@@ -55,6 +56,7 @@ async def omr_process(payload: OmrProcessRequest):
             master_answers=payload.masterAnswers,
             threshold=payload.threshold,
             delta=payload.delta,
+            include_images=payload.includeImages,
         )
         _log_info(
             "omr.process.request_finished",
