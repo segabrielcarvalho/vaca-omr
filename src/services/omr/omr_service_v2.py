@@ -16,6 +16,7 @@ OMR_DEBUG_TRACE = os.environ.get("OMR_DEBUG_TRACE", "false").lower() == "true"
 logger = logging.getLogger("vaca_omr.service_v2")
 REQUIRED_ARUCO_IDS = (0, 1, 2, 3)
 ARUCO_VARIANT_UPSCALE = 2.0
+ARUCO_MAX_DETECTION_DIMENSION_PX = 1600
 LOW_SIGNAL_THRESHOLD = 0.08
 LOW_SIGNAL_DELTA = 0.035
 LOW_SIGNAL_MEDIAN_GAP = 0.05
@@ -621,13 +622,15 @@ def _detect_aruco_markers(gray: np.ndarray, original: np.ndarray) -> dict[str, A
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     detector = _build_aruco_detector(dictionary)
     best: dict[str, Any] | None = None
+    detection_gray, detection_scale = _resize_for_aruco_detection(gray)
 
-    for variant in _build_aruco_variants(gray):
+    for variant in _build_aruco_variants(detection_gray):
         corners, ids, _ = detector.detectMarkers(variant["image"])
         corners = corners or []
         detected_ids = [] if ids is None else [int(value) for value in ids.flatten().tolist()]
 
-        scaled_corners = [_rescale_marker_corners(corner[0], variant["scale"]) for corner in corners]
+        variant_scale = detection_scale * variant["scale"]
+        scaled_corners = [_rescale_marker_corners(corner[0], variant_scale) for corner in corners]
         marker_map: dict[int, np.ndarray] = {}
         marker_corners: dict[int, np.ndarray] = {}
 
@@ -665,6 +668,22 @@ def _detect_aruco_markers(gray: np.ndarray, original: np.ndarray) -> dict[str, A
 
     best["overlay"] = overlay
     return best
+
+
+def _resize_for_aruco_detection(gray: np.ndarray) -> tuple[np.ndarray, float]:
+    max_dimension = max(gray.shape[:2])
+    if max_dimension <= ARUCO_MAX_DETECTION_DIMENSION_PX:
+        return gray, 1.0
+
+    scale = ARUCO_MAX_DETECTION_DIMENSION_PX / float(max_dimension)
+    resized = cv2.resize(
+        gray,
+        None,
+        fx=scale,
+        fy=scale,
+        interpolation=cv2.INTER_AREA,
+    )
+    return resized, scale
 
 
 def _build_aruco_detector(dictionary: Any) -> Any:
@@ -796,6 +815,9 @@ def _estimate_registration_offset(
     page: dict[str, Any],
     radius: int,
 ) -> tuple[int, int, bool]:
+    if registration.get("refineOffset") is False:
+        return 0, 0, False
+
     start_x = _mm_x_to_px(_num(registration.get("startXmm"), 20.0), page)
     start_y = _mm_y_to_px(_num(registration.get("startYmm"), 40.0), page)
     columns = int(_num(registration.get("columns"), _num(registration.get("digits"), 7)))
