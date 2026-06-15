@@ -1,7 +1,13 @@
 from fastapi import FastAPI
 from .routes.routes_v1 import router as api_router
 from .routes.routes_v2 import router as api_router_v2
+import logging
 import os
+
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 
 def create_app() -> FastAPI:
     app = FastAPI(

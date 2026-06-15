@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 import time
 from itertools import combinations
@@ -11,11 +12,14 @@ import numpy as np
 from .debug_dump import write_omr_debug_dump
 
 ENGINE_VERSION = os.environ.get("OMR_ENGINE_VERSION", "2.1.0-template-driven-no-qr")
+OMR_DEBUG_TRACE = os.environ.get("OMR_DEBUG_TRACE", "false").lower() == "true"
+logger = logging.getLogger("vaca_omr.service_v2")
 REQUIRED_ARUCO_IDS = (0, 1, 2, 3)
 ARUCO_VARIANT_UPSCALE = 2.0
 LOW_SIGNAL_THRESHOLD = 0.08
 LOW_SIGNAL_DELTA = 0.035
 LOW_SIGNAL_MEDIAN_GAP = 0.05
+REGISTRATION_NOMINAL_SIGNAL_THRESHOLD = 0.12
 
 
 def process_image_dynamic(
@@ -42,26 +46,70 @@ def process_image_dynamic(
     unhandled_error: dict[str, Any] | None = None
 
     try:
+        _trace(
+            "omr.service.started",
+            captureId=capture_id,
+            sessionId=session_id,
+            threshold=threshold,
+            delta=delta,
+            imageBase64Chars=len(image_base64 or ""),
+        )
         try:
             t = time.perf_counter()
             image = _decode_base64_image(image_base64)
             timings["decodeMs"] = _elapsed_ms(t)
+            _trace(
+                "omr.service.image_decoded",
+                captureId=capture_id,
+                sessionId=session_id,
+                decodeMs=timings["decodeMs"],
+                imageShape=list(image.shape),
+            )
         except ValueError as exc:
             timings["totalMs"] = _elapsed_ms(started)
             result = _error_response("IMAGE_DECODE_FAILED", str(exc), timings)
+            _trace(
+                "omr.service.failed",
+                captureId=capture_id,
+                sessionId=session_id,
+                errorCode="IMAGE_DECODE_FAILED",
+                totalMs=timings["totalMs"],
+            )
             return result
 
         try:
             geometry = _normalize_geometry(compiled_geometry_json)
             page = _normalize_page(geometry)
+            _trace(
+                "omr.service.geometry_normalized",
+                captureId=capture_id,
+                sessionId=session_id,
+                geometry=_summarize_geometry(geometry),
+            )
         except ValueError as exc:
             timings["totalMs"] = _elapsed_ms(started)
             result = _error_response("GEOMETRY_INVALID", str(exc), timings)
+            _trace(
+                "omr.service.failed",
+                captureId=capture_id,
+                sessionId=session_id,
+                errorCode="GEOMETRY_INVALID",
+                totalMs=timings["totalMs"],
+            )
             return result
 
         t = time.perf_counter()
         sheet = _detect_and_rectify_sheet(image, geometry, page)
         timings["rectifyMs"] = _elapsed_ms(t)
+        _trace(
+            "omr.service.sheet_rectified",
+            captureId=capture_id,
+            sessionId=session_id,
+            ok=sheet["ok"],
+            rectifyMs=timings["rectifyMs"],
+            arucoDetected=sheet.get("arucoDetected", []),
+            arucoVariant=sheet.get("arucoVariant"),
+        )
 
         if not sheet["ok"]:
             timings["totalMs"] = _elapsed_ms(started)
@@ -70,6 +118,13 @@ def process_image_dynamic(
                 sheet["errorMessage"],
                 timings,
                 extra={"arucoDetected": sheet.get("arucoDetected", [])},
+            )
+            _trace(
+                "omr.service.failed",
+                captureId=capture_id,
+                sessionId=session_id,
+                errorCode=sheet["errorCode"],
+                totalMs=timings["totalMs"],
             )
             return result
 
@@ -84,8 +139,23 @@ def process_image_dynamic(
             timings["registrationMs"] = _elapsed_ms(t)
             timings["totalMs"] = _elapsed_ms(started)
             result = _error_response("GEOMETRY_INVALID", str(exc), timings)
+            _trace(
+                "omr.service.failed",
+                captureId=capture_id,
+                sessionId=session_id,
+                errorCode="GEOMETRY_INVALID",
+                totalMs=timings["totalMs"],
+            )
             return result
         timings["registrationMs"] = _elapsed_ms(t)
+        _trace(
+            "omr.service.registration_read",
+            captureId=capture_id,
+            sessionId=session_id,
+            registrationMs=timings["registrationMs"],
+            status=registration["status"],
+            value=registration["value"],
+        )
 
         t = time.perf_counter()
         try:
@@ -94,8 +164,22 @@ def process_image_dynamic(
             timings["answersMs"] = _elapsed_ms(t)
             timings["totalMs"] = _elapsed_ms(started)
             result = _error_response("GEOMETRY_INVALID", str(exc), timings)
+            _trace(
+                "omr.service.failed",
+                captureId=capture_id,
+                sessionId=session_id,
+                errorCode="GEOMETRY_INVALID",
+                totalMs=timings["totalMs"],
+            )
             return result
         timings["answersMs"] = _elapsed_ms(t)
+        _trace(
+            "omr.service.answers_read",
+            captureId=capture_id,
+            sessionId=session_id,
+            answersMs=timings["answersMs"],
+            answersCount=len(answers["answers"]),
+        )
 
         t = time.perf_counter()
         registration_overlay = _draw_overlay(
@@ -121,6 +205,13 @@ def process_image_dynamic(
         timings["overlayMs"] = _elapsed_ms(t)
 
         timings["totalMs"] = _elapsed_ms(started)
+        _trace(
+            "omr.service.overlay_encoded",
+            captureId=capture_id,
+            sessionId=session_id,
+            overlayMs=timings["overlayMs"],
+            totalMs=timings["totalMs"],
+        )
 
         result = {
             "success": True,
@@ -137,6 +228,13 @@ def process_image_dynamic(
                 "overlayBase64": overlay_base64,
             },
         }
+        _trace(
+            "omr.service.finished",
+            captureId=capture_id,
+            sessionId=session_id,
+            success=True,
+            totalMs=timings["totalMs"],
+        )
         return result
     except Exception as exc:
         unhandled_error = {
@@ -144,6 +242,14 @@ def process_image_dynamic(
             "message": str(exc),
             "type": type(exc).__name__,
         }
+        _trace(
+            "omr.service.unhandled_error",
+            captureId=capture_id,
+            sessionId=session_id,
+            errorType=type(exc).__name__,
+            errorMessage=str(exc),
+            timings=timings,
+        )
         raise
     finally:
         _write_debug_dump_safe(
@@ -176,6 +282,21 @@ def process_image_dynamic(
 
 def _elapsed_ms(start: float) -> float:
     return round((time.perf_counter() - start) * 1000.0, 2)
+
+
+def _trace(event: str, **payload: Any) -> None:
+    if not OMR_DEBUG_TRACE:
+        return
+    logger.info(
+        json.dumps(
+            {
+                "event": event,
+                **payload,
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+    )
 
 
 def _error_response(
@@ -691,6 +812,11 @@ def _estimate_registration_offset(
                 start_y + int(round(row * row_gap_px)),
                 radius,
             )
+
+    bubble_count = max(1, columns * rows)
+    nominal_avg_score = nominal_score / bubble_count
+    if nominal_avg_score >= REGISTRATION_NOMINAL_SIGNAL_THRESHOLD:
+        return 0, 0, False
 
     best_score = nominal_score
     best_offset = (0, 0)

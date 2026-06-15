@@ -100,6 +100,7 @@ Processa folha usando geometria dinâmica (`template-driven`).
 - `PORT`: Porta do servidor (padrão: 11001)
 - `OMP_NUM_THREADS`: Número de threads OpenMP (padrão: 1)
 - `OPENCV_OPENCL_RUNTIME`: Runtime OpenCL (padrão: disabled)
+- `OMR_DEBUG_TRACE`: Ativa logs detalhados das etapas internas do motor v2 quando `true` (padrão: `false`)
 
 ### Parâmetros de Processamento
 
